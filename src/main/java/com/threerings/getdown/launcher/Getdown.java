@@ -32,10 +32,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLConnection;
+import java.net.*;
 
+import java.security.AccessControlException;
 import java.security.cert.Certificate;
 
 import java.util.ArrayList;
@@ -73,6 +72,7 @@ import com.threerings.getdown.util.ProgressObserver;
 import com.threerings.getdown.util.VersionUtil;
 
 import static com.threerings.getdown.Log.log;
+import static com.threerings.getdown.launcher.ProxyInfo.ProxyInfoBuilder.aProxyInfo;
 
 /**
  * Manages the main control for the Getdown application updater and deployment system.
@@ -199,26 +199,25 @@ public abstract class Getdown extends Thread
     /**
      * Configures our proxy settings (called by {@link ProxyPanel}) and fires up the launcher.
      */
-    public void configureProxy (String host, String port)
+    public void configureProxy (ProxyInfo proxyInfoInput)
     {
-        log.info("User configured proxy", "host", host, "port", port);
+        log.info("User configured proxy", "host", proxyInfoInput.getHost(), "port", proxyInfoInput.getPort());
 
+        proxyInfo = null;
         // if we're provided with valid values, create a proxy.txt file
-        if (!StringUtil.isBlank(host)) {
+        if (!StringUtil.isBlank(proxyInfoInput.getHost())) {
             File pfile = _app.getLocalPath("proxy.txt");
             try {
                 PrintStream pout = new PrintStream(new FileOutputStream(pfile));
-                pout.println("host = " + host);
-                if (!StringUtil.isBlank(port)) {
-                    pout.println("port = " + port);
-                }
+                pout.println("host = " + proxyInfoInput.getHost());
+                pout.println("port = " + proxyInfoInput.getPort());
                 pout.close();
             } catch (IOException ioe) {
                 log.warning("Error creating proxy file '" + pfile + "': " + ioe);
             }
 
             // also configure them in the JVM
-            setProxyProperties(host, port);
+            proxyInfo = proxyInfoInput;
         }
 
         // clear out our UI
@@ -237,87 +236,79 @@ public abstract class Getdown extends Thread
      */
     protected boolean detectProxy ()
     {
-        // we may already have a proxy configured
-        if (System.getProperty("http.proxyHost") != null) {
-            return true;
-        }
-
-        // look in the Vinders registry
-        if (RunAnywhere.isWindows()) {
-            try {
-                String host = null, port = null;
-                boolean enabled = false;
-                RegistryKey.initialize();
-                RegistryKey r = new RegistryKey(RootKey.HKEY_CURRENT_USER, PROXY_REGISTRY);
-                for (Iterator<?> iter = r.values(); iter.hasNext(); ) {
-                    RegistryValue value = (RegistryValue)iter.next();
-                    if (value.getName().equals("ProxyEnable")) {
-                        enabled = value.getStringValue().equals("1");
-                    }
-                    if (value.getName().equals("ProxyServer")) {
-                        String strval = value.getStringValue();
-                        int cidx = strval.indexOf(":");
-                        if (cidx != -1) {
-                            port = strval.substring(cidx+1);
-                            strval = strval.substring(0, cidx);
-                        }
-                        host = strval;
-                    }
-                }
-
-                if (enabled) {
-                    setProxyProperties(host, port);
-                    return true;
-                } else {
-                    log.info("Detected no proxy settings in the registry.");
-                }
-
-            } catch (Throwable t) {
-                log.info("Failed to find proxy settings in Windows registry", "error", t);
-            }
-        }
-
-        // otherwise look for and read our proxy.txt file
-        File pfile = _app.getLocalPath("proxy.txt");
-        if (pfile.exists()) {
-            try {
-                Map<String, Object> pconf = ConfigUtil.parseConfig(pfile, false);
-                setProxyProperties((String)pconf.get("host"), (String)pconf.get("port"));
-                return true;
-            } catch (IOException ioe) {
-                log.warning("Failed to read '" + pfile + "': " + ioe);
-            }
-        }
-
         // otherwise see if we actually need a proxy; first we have to initialize our application
         // to get some sort of interface configuration and the appbase URL
         log.info("Checking whether we need to use a proxy...");
+        //updateStatus("m.detecting_proxy");
+        try{
+
+        // we may already have a proxy configured
+        log.info("Checking whether we may already have a proxy configured");
+        if (proxyInfo != null) {
+            return checkProxyConnection(proxyInfo, _app.getConfigResource().getRemote());
+        }
         try {
             _ifc = _app.init(true);
         } catch (IOException ioe) {
             // no worries
         }
-        updateStatus("m.detecting_proxy");
-
         URL rurl = _app.getConfigResource().getRemote();
-        try {
-            // try to make a HEAD request for this URL
-            URLConnection conn = ConnectionUtil.open(rurl);
-            if (conn instanceof HttpURLConnection) {
-                HttpURLConnection hcon = (HttpURLConnection)conn;
-                try {
-                    hcon.setRequestMethod("HEAD");
-                    hcon.connect();
-                    // make sure we got a satisfactory response code
-                    if (hcon.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                        log.warning("Got a non-200 response but assuming we're OK because we got " +
-                                    "something...", "url", rurl, "rsp", hcon.getResponseCode());
-                    }
-                } finally {
-                    hcon.disconnect();
+        log.info("Checking whether system has proxy configured");
+        try{
+            System.setProperty("java.net.useSystemProxies", "true");
+            ProxySelector proxySelector = ProxySelector.getDefault();
+            URI uri = rurl.toURI();
+            log.info("find proxy for uri", uri);
+            List<Proxy> proxyList = proxySelector.select(uri);
+            if(proxyList != null && proxyList.size() > 0){
+                log.info("proxylist", proxyList);
+                Proxy proxy = proxyList.get(0);
+                log.info("proxy", "type", proxy.type());
+                if(proxy.address() instanceof InetSocketAddress){
+                    InetSocketAddress address = (InetSocketAddress)proxy.address();
+                    log.info("proxy address ", "host", address.getHostName(),  "port", address.getPort());
+                }
+                if(proxy.type() != Proxy.Type.DIRECT && proxy.address() instanceof InetSocketAddress){
+                    InetSocketAddress address = (InetSocketAddress)proxy.address();
+                    proxyInfo = aProxyInfo()
+                            .withType(proxy.type())
+                            .withHost(address.getHostName())
+                            .withPort(address.getPort())
+                            .build();
+                    return checkProxyConnection(proxyInfo, rurl);
                 }
             }
+        }
+        catch(AccessControlException ace){
+            log.info("Could not retrieve proxy settings from system.");
+        } catch (URISyntaxException e) {
+           log.info("Invalid config url");
+        }
+        finally {
+            System.setProperty("java.net.useSystemProxies", "false");
+        }
 
+        log.info("Checking whether proxy is configured in proxy.txt file");
+        // otherwise look for and read our proxy.txt file
+        File pfile = _app.getLocalPath("proxy.txt");
+        if (pfile.exists()) {
+            try {
+                Map<String, Object> pconf = ConfigUtil.parseConfig(pfile, false);
+                proxyInfo = aProxyInfo()
+                        .withHost((String)pconf.get("host"))
+                        .withPort(Integer.valueOf((String)pconf.get("port")))
+                        .build();
+                return checkProxyConnection(proxyInfo, rurl);
+            } catch (IOException ioe) {
+                log.warning("Failed to read '" + pfile + "': " + ioe);
+            }
+        }
+
+        proxyInfo = aProxyInfo()
+                    .withType(Proxy.Type.DIRECT)
+                    .build();
+        boolean check = checkProxyConnection(proxyInfo, rurl);
+        if(check){
             // we got through, so we appear not to require a proxy; make a blank proxy config and
             // get on gettin' down
             log.info("No proxy appears to be needed.");
@@ -326,29 +317,109 @@ public abstract class Getdown extends Thread
             } catch (IOException ioe) {
                 log.warning("Failed to create blank proxy file '" + pfile + "': " + ioe);
             }
-            return true;
-
-        } catch (IOException ioe) {
-            log.info("Failed to HEAD " + rurl + ": " + ioe);
+        }
+        else{
             log.info("We probably need a proxy, but auto-detection failed.");
         }
+        return check;
+        }
+        finally{
+            //updateStatus(null);
+        }
+    }
 
-        // let the caller know that we need a proxy but can't detect it
-        return false;
+    private static boolean checkProxyConnection(ProxyInfo proxyInfo, URL rurl) {
+        log.info("check proxy url connection", "host", proxyInfo.getHost(), "port", proxyInfo.getPort());
+        if(proxyInfo.getType() == null){
+            //try http then socks proxy
+            proxyInfo.setType(Proxy.Type.HTTP);
+            if(!checkProxyConnection(proxyInfo, rurl)){
+                proxyInfo.setType(Proxy.Type.SOCKS);
+                if(!checkProxyConnection(proxyInfo, rurl)){
+                    proxyInfo.setType(null);
+                    return false;
+                }
+            }
+            return true;
+        }
+        else {
+            try {
+                // try to make a HEAD request for this URL
+                URLConnection conn = rurl.openConnection(proxyInfo.getProxy());
+                Authenticator.setDefault(proxyInfo.hasAuthentication() ? proxyInfo.getAuthenticator() : null);
+                if (conn instanceof HttpURLConnection) {
+                    HttpURLConnection hcon = (HttpURLConnection) conn;
+                    try {
+                        hcon.setRequestMethod("HEAD");
+                        hcon.connect();
+                        // make sure we got a satisfactory response code
+                        if (hcon.getResponseCode() == HttpURLConnection.HTTP_PROXY_AUTH) {
+                            log.info("Proxy authorization needed");
+                            return false;
+                        }
+                        if (hcon.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                            log.warning("Got a non-200 response but assuming we're OK because we got " +
+                                    "something...", "url", rurl, "rsp", hcon.getResponseCode());
+                        }
+                    } finally {
+                        hcon.disconnect();
+                    }
+                }
+
+
+                return true;
+
+            } catch (IOException ioe) {
+                log.info("Failed to HEAD " + rurl + ": " + ioe);
+            }
+
+            // let the caller know that we need a proxy but can't detect it
+            return false;
+        }
+    }
+
+    private void setProxyProperties (Proxy.Type proxyType, String host, String port) {
+        setProxyProperties(proxyType, host, port, null, null);
     }
 
     /**
      * Configures the JVM proxy system properties.
      */
-    protected void setProxyProperties (String host, String port)
+    protected void setProxyProperties (Proxy.Type proxyType, final String host, final String port, final String user, final String password)
     {
-        if (!StringUtil.isBlank(host)) {
+        if(proxyType == Proxy.Type.SOCKS){
+
+        }
+        else if (!StringUtil.isBlank(host)) {
             System.setProperty("http.proxyHost", host);
+            System.setProperty("https.proxyHost", host);
             if (!StringUtil.isBlank(port)) {
                 System.setProperty("http.proxyPort", port);
+                System.setProperty("https.proxyPort", port);
             }
-            log.info("Using proxy", "host", host, "port", port);
         }
+        log.info("Using proxy", "host", host, "port", port);
+        if (!StringUtil.isBlank(user)) {
+            log.info("Using proxy password authentication start", "user", user);
+            System.setProperty("http.proxyUser", user);
+            System.setProperty("https.proxyUser", user);
+            if (!StringUtil.isBlank(password)) {
+                System.setProperty("http.proxyPassword", password);
+                System.setProperty("https.proxyPassword", password);
+            }
+            setPasswordAuthentication(user, password);
+            log.info("Using proxy password authentication end");
+        }
+    }
+
+    private void setPasswordAuthentication(final String user, final String password) {
+        Authenticator authenticator = new Authenticator() {
+            public PasswordAuthentication getPasswordAuthentication() {
+                return new PasswordAuthentication(user,
+                        password.toCharArray());
+            }
+        };
+        Authenticator.setDefault(authenticator);
     }
 
     /**
@@ -356,10 +427,15 @@ public abstract class Getdown extends Thread
      */
     protected void getdown ()
     {
-        log.info("---------------- Proxy Info -----------------");
-        log.info("-- Proxy Host: " + System.getProperty("http.proxyHost"));
-        log.info("-- Proxy Port: " + System.getProperty("http.proxyPort"));
-        log.info("---------------------------------------------");
+        if(proxyInfo != null){
+            for(Map.Entry<String, String> proxyProperty : proxyInfo.getProxySystemProperties().entrySet()){
+                System.setProperty(proxyProperty.getKey(), proxyProperty.getValue());
+            }
+            log.info("---------------- Proxy Info -----------------");
+            log.info("-- Proxy Host: " + proxyInfo.getHost());
+            log.info("-- Proxy Port: " + proxyInfo.getPort());
+            log.info("---------------------------------------------");
+        }
 
         try {
             // first parses our application deployment file
@@ -771,7 +847,7 @@ public abstract class Getdown extends Thread
                 Process proc;
                 if (_app.hasOptimumJvmArgs()) {
                     // if we have "optimum" arguments, we want to try launching with them first
-                    proc = _app.createProcess(true);
+                    proc = _app.createProcess(proxyInfo, true);
 
                     long fallback = System.currentTimeMillis() + FALLBACK_CHECK_TIME;
                     boolean error = false;
@@ -786,10 +862,10 @@ public abstract class Getdown extends Thread
 
                     if (error) {
                         log.info("Failed to launch with optimum arguments; falling back.");
-                        proc = _app.createProcess(false);
+                        proc = _app.createProcess(proxyInfo, false);
                     }
                 } else {
-                    proc = _app.createProcess(false);
+                    proc = _app.createProcess(proxyInfo, false);
                 }
 
                 // close standard in to avoid choking standard out of the launched process
@@ -1201,6 +1277,7 @@ public abstract class Getdown extends Thread
     };
 
     protected Application _app;
+    protected ProxyInfo proxyInfo;
     protected Application.UpdateInterface _ifc = new Application.UpdateInterface();
 
     protected ResourceBundle _msgs;

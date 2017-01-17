@@ -5,26 +5,23 @@
 
 package com.threerings.getdown.launcher;
 
-import java.awt.BorderLayout;
-import java.awt.Dimension;
+import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 
 import java.util.MissingResourceException;
 import java.util.ResourceBundle;
 
-import javax.swing.BorderFactory;
-import javax.swing.JButton;
-import javax.swing.JLabel;
-import javax.swing.JPanel;
-import javax.swing.JTextField;
+import javax.swing.*;
 
 import com.samskivert.swing.GroupLayout;
 import com.samskivert.swing.Spacer;
 import com.samskivert.swing.VGroupLayout;
 import com.samskivert.text.MessageUtil;
+import com.samskivert.util.StringUtil;
 
 import static com.threerings.getdown.Log.log;
+import static com.threerings.getdown.launcher.ProxyInfo.ProxyInfoBuilder.aProxyInfo;
 
 /**
  * Displays an interface with which the user can configure their proxy
@@ -43,14 +40,25 @@ public class ProxyPanel extends JPanel
         add(new JLabel(get("m.configure_proxy")));
         add(new Spacer(5, 5));
 
-        JPanel row = new JPanel(new BorderLayout(5, 5));
-        row.add(new JLabel(get("m.proxy_host")), BorderLayout.WEST);
+        JPanel row = createTextPanel("m.proxy_host");
         row.add(_host = new SaneTextField());
         add(row);
 
-        row = new JPanel(new BorderLayout(5, 5));
-        row.add(new JLabel(get("m.proxy_port")), BorderLayout.WEST);
+        row = createTextPanel("m.proxy_port");
         row.add(_port = new SaneTextField());
+        add(row);
+
+        row = createTextPanel("m.proxy_user");
+        row.add(_user = new SaneTextField());
+        add(row);
+
+        row = createTextPanel("m.proxy_password");
+        row.add(_password = new JPasswordField(){
+            @Override
+            public Dimension getPreferredSize () {
+                return setMaxWidth(super.getPreferredSize());
+            }
+        });
         add(row);
 
         add(new Spacer(5, 5));
@@ -67,14 +75,23 @@ public class ProxyPanel extends JPanel
         add(row);
 
         // set up any existing proxy defaults
-        String host = System.getProperty("http.proxyHost");
-        if (host != null) {
-            _host.setText(host);
+        if(getdown.proxyInfo != null){
+            _host.setText(getdown.proxyInfo.getHost());
+            _port.setText(""+getdown.proxyInfo.getPort());
+            _user.setText(getdown.proxyInfo.getUser());
         }
-        String port = System.getProperty("http.proxyPort");
-        if (port != null) {
-            _port.setText(port);
-        }
+    }
+
+    private JPanel createTextPanel(String key){
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        row.add(createLabel(key));
+        return row;
+    }
+
+    private JLabel createLabel(String key){
+        JLabel label = new JLabel(get(key));
+        label.setPreferredSize(new Dimension(100, label.getPreferredSize().height));
+        return label;
     }
 
     // documentation inherited
@@ -93,7 +110,7 @@ public class ProxyPanel extends JPanel
         // or the JLabel will claim a bogus height thinking it can lay its
         // text out all on one line which will booch the whole UI's
         // preferred size
-        return new Dimension(500, 350);
+        return new Dimension(500, 450);
     }
 
     // documentation inherited from interface
@@ -102,7 +119,30 @@ public class ProxyPanel extends JPanel
         String cmd = e.getActionCommand();
         if (cmd.equals("ok")) {
             // communicate this info back to getdown
-            _getdown.configureProxy(_host.getText(), _port.getText());
+            if(!StringUtil.isBlank(_host.getText()) && StringUtil.isBlank(_port.getText())){
+                JOptionPane.showMessageDialog(this,
+                        get("m.noPort.message"),
+                        get("m.noPort.title"),
+                        JOptionPane.ERROR_MESSAGE);
+            }
+            else{
+                Integer port ;
+                try{
+                    port = Integer.valueOf(_port.getText());
+                    _getdown.configureProxy(aProxyInfo()
+                            .withHost(_host.getText())
+                            .withPort(port)
+                            .withUser(_user.getText())
+                            .withPassword(_password.getPassword()!=null && _password.getPassword().length > 0 ? String.valueOf(_password.getPassword()) : null)
+                            .build());
+                }
+                catch(NumberFormatException nfe){
+                    JOptionPane.showMessageDialog(this,
+                            get("m.invalidPort.message"),
+                            get("m.invalidPort.title"),
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
 
         } else {
             // they canceled, we're outta here
@@ -130,10 +170,13 @@ public class ProxyPanel extends JPanel
     {
         @Override
         public Dimension getPreferredSize () {
-            Dimension d = super.getPreferredSize();
-            d.width = Math.max(d.width, 150);
-            return d;
+            return setMaxWidth(super.getPreferredSize());
         }
+    }
+
+    private static Dimension setMaxWidth(Dimension d) {
+        d.width = Math.max(d.width, 150);
+        return d;
     }
 
     protected Getdown _getdown;
@@ -141,4 +184,6 @@ public class ProxyPanel extends JPanel
 
     protected JTextField _host;
     protected JTextField _port;
+    protected JTextField _user;
+    protected JPasswordField _password;
 }

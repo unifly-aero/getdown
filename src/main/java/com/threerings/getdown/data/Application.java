@@ -9,10 +9,7 @@ import java.awt.Color;
 import java.awt.Rectangle;
 import java.io.*;
 import java.lang.reflect.Method;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.net.URLConnection;
+import java.net.*;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -31,6 +28,7 @@ import com.samskivert.util.RandomUtil;
 import com.samskivert.util.RunAnywhere;
 import com.samskivert.util.StringUtil;
 
+import com.threerings.getdown.launcher.ProxyInfo;
 import org.apache.commons.codec.binary.Base64;
 
 import com.threerings.getdown.launcher.RotatingBackgrounds;
@@ -894,7 +892,7 @@ public class Application
      * @param optimum whether or not to include the set of optimum arguments (as opposed to falling
      * back).
      */
-    public Process createProcess (boolean optimum)
+    public Process createProcess (ProxyInfo proxyInfo, boolean optimum)
         throws IOException
     {
         // create our classpath
@@ -921,11 +919,10 @@ public class Application
             args.add("-Xdock:name=" + _name);
         }
 
-        // pass along our proxy settings
-        String proxyHost;
-        if ((proxyHost = System.getProperty("http.proxyHost")) != null) {
-            args.add("-Dhttp.proxyHost=" + proxyHost);
-            args.add("-Dhttp.proxyPort=" + System.getProperty("http.proxyPort"));
+        if(proxyInfo!=null){
+            for(Map.Entry<String, String> proxyProperty : proxyInfo.getProxySystemProperties().entrySet()){
+                args.add("-D"+ proxyProperty.getKey() + "=" + proxyProperty.getValue());
+            }
         }
 
         // add the marker indicating the app is running in getdown
@@ -967,7 +964,7 @@ public class Application
 
         String[] envp = createEnvironment();
         String[] sargs = args.toArray(new String[args.size()]);
-        log.info("Running " + StringUtil.join(sargs, "\n  "));
+        log.info("Running " + StringUtil.join(sargs, "\n  ").replaceAll(".proxyPassword=\\S", ".proxyPassword=*"));
 
         return Runtime.getRuntime().exec(sargs, envp, _appdir);
     }
