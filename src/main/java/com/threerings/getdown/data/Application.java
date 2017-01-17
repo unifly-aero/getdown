@@ -964,7 +964,9 @@ public class Application
 
         String[] envp = createEnvironment();
         String[] sargs = args.toArray(new String[args.size()]);
-        log.info("Running " + StringUtil.join(sargs, "\n  ").replaceAll(".proxyPassword=\\S", ".proxyPassword=*"));
+        log.info("Running " + StringUtil.join(sargs, "\n  ")
+                .replaceAll("\\.proxyPassword=(\\S)+", ".proxyPassword=*")
+                .replaceAll("java\\.net\\.socks\\.password=(\\S)+", "java.net.socks.password=*"));
 
         return Runtime.getRuntime().exec(sargs, envp, _appdir);
     }
