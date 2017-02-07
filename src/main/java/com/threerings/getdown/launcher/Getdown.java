@@ -294,11 +294,14 @@ public abstract class Getdown extends Thread
         if (pfile.exists()) {
             try {
                 Map<String, Object> pconf = ConfigUtil.parseConfig(pfile, false);
-                proxyInfo = aProxyInfo()
-                        .withHost((String)pconf.get("host"))
-                        .withPort(Integer.valueOf((String)pconf.get("port")))
-                        .build();
-                return checkProxyConnection(proxyInfo, rurl);
+                String host = (String) pconf.get("host");
+                if(host != null && host.trim().length() > 0){
+                    proxyInfo = aProxyInfo()
+                            .withHost(host)
+                            .withPort(Integer.valueOf((String)pconf.get("port")))
+                            .build();
+                    return checkProxyConnection(proxyInfo, rurl);
+                }
             } catch (IOException ioe) {
                 log.warning("Failed to read '" + pfile + "': " + ioe);
             }
